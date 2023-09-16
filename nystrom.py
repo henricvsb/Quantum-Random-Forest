@@ -16,11 +16,14 @@ class Nystrom:
         self._trained_flag = False
         self._prev_transform = None
 
+
+        print("We use the Nyström Approximation WITHOUT Incomplete Cholesky Decomposition")
+
     def fit(self, X, kern_el_dict=None, gram_matrix=None):
         """ This function randomly chooses landmark points and constructs the Nystrom embedding."""
         assert self.num_sample <= len(X), "Cannot sample more than supplied. {} <= {}".format(self.num_sample, len(X)) 
         X = np.array(X)
-        
+
         self.basis_indxs_ = np.random.choice(len(X), self.num_sample)
         self.basis_ = X[self.basis_indxs_]
 
@@ -51,3 +54,24 @@ class Nystrom:
         self.fit(X, kern_el_dict=kern_el_dict, gram_matrix=gram_matrix)
         self._prev_transform = self.transform(X, kern_el_dict=kern_el_dict, gram_matrix=gram_matrix)
         return self._prev_transform
+    
+import numpy as np
+
+def ichol(a, n):
+
+    for k in range(n):
+        a[k, k] = np.sqrt(a[k, k])
+        for i in range(k+1, n):
+            if a[i, k] != 0:
+                a[i, k] = a[i, k] / a[k, k]
+        
+        for j in range(k+1, n):
+            for i in range(j, n):
+                if a[i, j] != 0:
+                    a[i, j] = a[i, j] - a[i, k] * a[j, k]
+
+    for i in range(n):
+        for j in range(i+1, n):
+            a[i, j] = 0
+
+    return a

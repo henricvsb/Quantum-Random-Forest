@@ -60,6 +60,7 @@ class QuantumDecisionTree:
         if kern_el_dict is not None:
             print("Kernel Dictionary given to the tree.")
             self.kern_el_dict = kern_el_dict
+            print(self.kern_el_dict)
 
         if criterion is not None:
             self.reset_sim(criterion)

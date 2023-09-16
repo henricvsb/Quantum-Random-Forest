@@ -15,7 +15,7 @@ from kernel_element_storage import KernelElementStorage
 MODEL_TYPES = ['clas', 'reg']
 
 PARALLEL = False             # This trains each decision tree in parallel using Pool
-NUM_CORES = 3
+NUM_CORES = 1
 
 
 class QuantumRandomForest:
@@ -25,7 +25,7 @@ class QuantumRandomForest:
     def __init__(self, n_qubits, model_type, num_trees, criterion, max_depth=None, min_samples_split=2, tree_split_num=2,
                  ensemble_var='pqc_arch', branch_var='param_rand', dt_type='random', num_classes=None, ensemble_vote_type='ave', num_params_split=None, 
                  num_rand_gen=1, num_rand_meas_q=None, pqc_sample_num=1024, embed=False, svm_num_train=None, nystrom_approx=True,
-                 svm_c=None, device='cirq', device_map=None, kernel_pool_filename=None):
+                 svm_c=None, device='cirq', device_map=None, kernel_pool_filename=None, cholesky=False):
         """
         :param n_qubits: number of qubits
         :param model_type: this can either be clas or reg
@@ -90,6 +90,8 @@ class QuantumRandomForest:
         self.kernel_pool_filename = self.set_kernel_pool(kernel_pool_filename)
         self.kernel_el_dict = False
 
+        self.cholesky = cholesky # Added for the sake of the comparison: Do we want to run this with or without Cholesky?
+
         self.split_fn_list = None 
         self.qdt_list = self.init_ensemble(ensemble_var=ensemble_var)   # List of the decision trees used to form a vote
         self.pca = None
@@ -104,14 +106,6 @@ class QuantumRandomForest:
         """ Given a list of instances this function returns a list of outputs voted from the ensemble of trees. """
         assert not parallel or not ret_pred_distr, "To store prediction distributions, testing cannot be run in parallel. This might be required \
                                                     when calculating correlation between trees. "
-        if parallel:
-            instances_list = split_test_data_for_cores(instances)
-            self.remove_sim()
-            arguments = [(self, inst) for inst in instances_list]
-            with mp.Pool(NUM_CORES) as p:
-                results = p.map(_test_pool, arguments)
-                self.reset_sim()
-                return np.concatenate(results)
 
         if self.pca is not None:
             instances = self.pca_transform(instances=instances)
@@ -148,20 +142,14 @@ class QuantumRandomForest:
 
         assert len(data_df) == len(self.qdt_list), "Error in assigning data to trees."
 
-        if PARALLEL:
-            self.remove_sim()
-            arguments = [(qdt, data_df[i], self.criterion) for i, qdt in enumerate(self.qdt_list)]
-            with mp.Pool(NUM_CORES) as p:
-                self.qdt_list = p.map(_train_pool, arguments)
-            self.reset_sim()  # Being able to run in parallel requires pickle -- cannot have device
-        else:
-            for i, qdt in enumerate(self.qdt_list):
-                print("\n\nTraining tree {} of {} ".format(i + 1, self.num_trees) + "-" * 60)
-                if i >= 1:
-                    kern_el_dict = self.qdt_list[i - 1].kern_el_dict
-                else:
-                    kern_el_dict = None
-                qdt.train(data_df=data_df[i], kern_el_dict=kern_el_dict)
+    
+        for i, qdt in enumerate(self.qdt_list):
+            print("\n\nTraining tree {} of {} ".format(i + 1, self.num_trees) + "-" * 60)
+            if i >= 1:
+                kern_el_dict = self.qdt_list[i - 1].kern_el_dict
+            else:
+                kern_el_dict = None
+            qdt.train(data_df=data_df[i], kern_el_dict=kern_el_dict)
 
     def predict(self, instances, return_unc=False, parallel=PARALLEL, calc_tree_corr=False, ret_pred_distr=False):
         ret_pred_distr = True if ret_pred_distr or calc_tree_corr else False
@@ -239,11 +227,11 @@ class QuantumRandomForest:
             return self._init_split_fn_qke(sf_type, embed=embed, num_params_split=num_params_split, svm_c=svm_c)
         elif sf_type == 'pqc_arch':
             return SplitFunction.init_rand_pqc(self.n_qubits, num_params_split, self.criterion, self.split_num,
-                                               self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx)
+                                               self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx, self.cholesky)
         elif sf_type == 'eff_anz_pqc_arch':
             num_layers = (num_params_split // self.n_qubits) + 1
             return SplitFunction.init_eff_anz_pqc(self.n_qubits, num_layers, self.criterion, self.split_num, 
-                                                  self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx)
+                                                  self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx, self.cholesky)
         else:
             print("Has not yet been implemented."); exit()
 
@@ -255,18 +243,18 @@ class QuantumRandomForest:
         assert 'as_params' in embed, "qke has only been implemented for as_params embedding."
         if sf_type == 'pqc_arch':
             return SplitFunction.init_rand_pqc_qke(self.n_qubits, num_params_split, self.criterion, self.split_num,
-                                               self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx, svm_c)
+                                               self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx, svm_c, self.cholesky)
         elif sf_type == 'qke_pool':
             return SplitFunction.init_pqc_qke_pool(self.n_qubits, num_params_split, self.criterion, self.split_num,
-                                               self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx, svm_c)
+                                               self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx, svm_c, self.cholesky)
         elif sf_type == 'eff_anz_pqc_arch':
             # num_layers = (num_params_split // self.n_qubits) + 1
             num_layers = np.ceil(num_params_split / self.n_qubits).astype(int)
             return SplitFunction.init_eff_anz_pqc_qke(self.n_qubits, num_layers, self.criterion, self.split_num, 
-                                                  self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx, svm_c)
+                                                  self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx, svm_c, self.cholesky)
         elif sf_type == 'iqp_anz_pqc_arch':
             return SplitFunction.init_iqp_anz_pqc_qke(self.n_qubits, num_params_split, self.criterion, self.split_num,
-                                               self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx, svm_c)
+                                               self.pqc_sample_num, embed, sf_type, self.num_rand_meas_q, self.nystrom_approx, svm_c, self.cholesky)
         else:
             print("Has not yet been implemented."); exit()
             
@@ -357,6 +345,7 @@ class QuantumRandomForest:
         if svm_c is None:
             svm_c = self.svm_c
         sf = self.qdt_list[0].split_fn
+        print("TYPE OF SVM", type(sf._ret_svm(nystrom=nystrom)))
         return QSVM(sf._ret_svm(nystrom=nystrom), split_fn=sf)
 
     def load_kernel_el_from_file(self, dataset):

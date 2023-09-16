@@ -14,6 +14,7 @@ import os
 import more_itertools as mit
 from sklearn.gaussian_process.kernels import RBF
 from nystrom import Nystrom
+from nystrom_cholesky import NystromCholesky
 from data_construction import check_dataset_relabelled, get_stilted_dataset, save_dataset_relabelled, relabelled_filename, save_kernel_for_dataset_relabelled, all_datasets
 from sklearn.model_selection import cross_val_score
 
@@ -24,7 +25,7 @@ DELICACY_PROP = 0.3             # If more than DELICACY_PROP proportion of the t
 
 SVM_KERNEL_SYM = False          # This determines wheter the kernel is symmeterised
 ENFORCE_PSD = False
-NYSTROM = False
+NYSTROM = True
 NYSTROM_CLASSICAL_KERNEL = 'linear'
 CLASS_SELECTION = 'split' # "OAA" or "split"
 
@@ -32,7 +33,7 @@ class SplitFunction:
     """ This object contains the function used to split the set of quantum states into the lower branches. Each
         node in the decision tree would contain this parameterised SplitFunction that can be learned. """
     def __init__(self, criterion, split_num, pqc, pqc_sample_num, embed=False, branch_var='param_rand', 
-                 num_rand_meas_q=None, nystrom=None, svm_c=None):
+                 num_rand_meas_q=None, nystrom=None, svm_c=None, cholesky=False):
         assert isinstance(pqc, PQC), "pqc must be of object PQC."
         assert isinstance(embed, str), "Embedding not a string."
         assert isinstance(branch_var, str), "branch_var not a string."
@@ -57,6 +58,9 @@ class SplitFunction:
         self.nystrom = NYSTROM if nystrom is None else nystrom
         self.feat_map_nystrom = None
         self._train_kernel = None
+
+        # Choleksy
+        self.cholesky = cholesky 
 
         # QSVM
         self.kern_el_dict_for_qsvm = None
@@ -370,22 +374,22 @@ class SplitFunction:
             if self.branch_var == 'eff_anz_pqc_arch':
                 num_layers = self.pqc.num_params // self.pqc.n_qubits
                 return self.init_eff_anz_pqc_qke(self.pqc.n_qubits, num_layers, self.criterion, split_num, 
-                                self.pqc_sample_num, self.embed, self.branch_var, self.num_rand_meas_q, self.nystrom, self.svm_c)
+                                self.pqc_sample_num, self.embed, self.branch_var, self.num_rand_meas_q, self.nystrom, self.svm_c, self.cholesky)
             elif self.branch_var == 'iqp_anz_pqc_arch':
                 return self.init_iqp_anz_pqc_qke(self.pqc.n_qubits, self.pqc.num_params, self.criterion, split_num, 
-                                self.pqc_sample_num, self.embed, self.branch_var, self.num_rand_meas_q, self.nystrom, self.svm_c)
+                                self.pqc_sample_num, self.embed, self.branch_var, self.num_rand_meas_q, self.nystrom, self.svm_c, self.cholesky)
             elif self.branch_var == 'qke_pool':
                 return self.init_pqc_qke_pool(self.pqc.n_qubits, self.pqc.num_params, self.criterion, split_num, 
-                                self.pqc_sample_num, self.embed, self.branch_var, self.num_rand_meas_q, self.nystrom, self.svm_c)
+                                self.pqc_sample_num, self.embed, self.branch_var, self.num_rand_meas_q, self.nystrom, self.svm_c, self.cholesky)
             elif self.branch_var == 'pqc_arch':
                 return self.init_rand_pqc_qke(self.pqc.n_qubits, self.pqc.num_params, self.criterion, split_num, 
-                                self.pqc_sample_num, self.embed, self.branch_var, self.num_rand_meas_q, self.nystrom, self.svm_c)
+                                self.pqc_sample_num, self.embed, self.branch_var, self.num_rand_meas_q, self.nystrom, self.svm_c, self.cholesky)
             else:
                 print("Has not yet been implemented."); exit()
         pqc = self.pqc.gen_rand(1, param_init_type=self.branch_var)[0]
         return SplitFunction(self.criterion, split_num, pqc, self.pqc_sample_num, self.embed,
                              branch_var=self.branch_var, num_rand_meas_q=self.num_rand_meas_q, nystrom=self.nystrom, 
-                             svm_c=self.svm_c)
+                             svm_c=self.svm_c, cholesky=self.cholesky)
 
     def map_pqc_out(self, pqc_out, _training=False):
         """ This method maps the output of the pqc to an index indicating the child node. """
@@ -453,7 +457,7 @@ class SplitFunction:
         return s
 
     def reset_nystrom_transform(self):
-        self.feat_map_nystrom = Nystrom(kernel=self.kernel, num_sample=self.svm_num_train)
+        self.feat_map_nystrom = Nystrom(kernel=self.kernel, num_sample=self.svm_num_train) if not self.cholesky else NystromCholesky(kernel=self.kernel, num_sample=self.svm_num_train)
 
     def init_split_type(self, split_type):
         self.split_type = split_type
@@ -468,39 +472,39 @@ class SplitFunction:
         return get_margin(self._svm, True, self.nystrom)
         
     @classmethod
-    def init_rand_pqc(cls, n_qubits, num_params, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None):
+    def init_rand_pqc(cls, n_qubits, num_params, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None, cholesky=False):
         pqc = PQC.init_rand_arch(n_qubits, num_params, pqc_sample_num, embed)
-        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c)
+        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c, cholesky)
 
     @classmethod
-    def init_eff_anz_pqc(cls, n_qubits, num_layers, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None):
+    def init_eff_anz_pqc(cls, n_qubits, num_layers, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None, cholesky=False):
         pqc = PQC.init_eff_anz(n_qubits, num_layers=num_layers, pqc_sample_num=pqc_sample_num,
                                embed=embed)
-        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c)
+        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c, cholesky)
     
     @classmethod
-    def init_rand_pqc_qke(cls,  n_qubits, num_params, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None):
+    def init_rand_pqc_qke(cls,  n_qubits, num_params, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None, cholesky=False):
         pqc = PQC.init_rand_arch_qke(n_qubits, num_params, pqc_sample_num, embed)
         pqc.modify_to_qke_observables(num_rand_meas_q)
-        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c)
+        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c, cholesky)
 
     @classmethod
-    def init_eff_anz_pqc_qke(cls, n_qubits, num_layers, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None):
+    def init_eff_anz_pqc_qke(cls, n_qubits, num_layers, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None, cholesky=False):
         pqc = PQC.init_eff_anz_qke(n_qubits, num_layers, pqc_sample_num, embed)
         pqc.modify_to_qke_observables(num_rand_meas_q)
-        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c)
+        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c, cholesky)
     
     @classmethod
-    def init_iqp_anz_pqc_qke(cls, n_qubits, num_params, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None):
+    def init_iqp_anz_pqc_qke(cls, n_qubits, num_params, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None, cholesky=False):
         pqc = PQC.init_iqp_anz_qke(n_qubits, num_params, pqc_sample_num, embed)
         pqc.modify_to_qke_observables(num_rand_meas_q)
-        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c)
+        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c, cholesky)
 
     @classmethod
-    def init_pqc_qke_pool(cls,  n_qubits, num_params, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None):
+    def init_pqc_qke_pool(cls,  n_qubits, num_params, criterion, split_num, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c=None, cholesky=False):
         pqc = PQC.init_qke_pqc_pool(n_qubits, num_params, pqc_sample_num, embed)
         pqc.modify_to_qke_observables(num_rand_meas_q)
-        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c)
+        return cls(criterion, split_num, pqc, pqc_sample_num, embed, branch_var, num_rand_meas_q, nystrom, svm_c, cholesky)
     
 
 class SplitCriterion:
